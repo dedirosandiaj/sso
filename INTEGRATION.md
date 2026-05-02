@@ -135,6 +135,7 @@ CORS_ORIGIN=http://localhost:3000,https://app.ucentric.id
 | 401 | Invalid credentials | Login gagal (Username/Password salah). |
 | 403 | Access denied | User tidak punya izin (Hirarki RBAC). |
 | 403 | Account locked | Akun terkunci 15 menit (Salah 5x). |
+| 403 | Inactive account | Akun dinonaktifkan (`status: false`). |
 | 429 | Too many requests | Rate limit terdeteksi. |
 
 ---

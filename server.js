@@ -215,6 +215,11 @@ app.post(
 
       const user = result.rows[0];
 
+      // --- Account Status Check ---
+      if (user.status !== true) {
+        return res.status(403).json({ success: false, message: 'Your account is inactive. Please contact administrator.' });
+      }
+
       // --- Account Lockout Check ---
       if (user.locked_until && new Date(user.locked_until) > new Date()) {
         return res.status(403).json({ success: false, message: 'Account is temporarily locked. Try again later.' });
