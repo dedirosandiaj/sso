@@ -86,6 +86,16 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
+// Middleware to authorize roles
+const authorizeRole = (roles) => {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied: Insufficient permissions' });
+    }
+    next();
+  };
+};
+
 // Helper to handle validation errors
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
@@ -100,15 +110,24 @@ const handleValidationErrors = (req, res, next) => {
 };
 
 // ===========================
-// REGISTRASI API
+// CREATE USER (Protected: Admin Only)
 // ===========================
 app.post(
-  '/api/auth/registrasi',
+  '/api/users',
   authenticateToken,
+  authorizeRole(['admin', 'superadmin']),
   [
     body('name').notEmpty().withMessage('Name is required').trim().escape(),
     body('username').notEmpty().withMessage('Username is required').trim().escape(),
-    body('password').notEmpty().withMessage('Password is required').isLength({ min: 6, max: 128 }).withMessage('Password must be between 6 and 128 characters'),
+    body('password')
+      .isStrongPassword({
+        minLength: 8,
+        minLowercase: 1,
+        minUppercase: 1,
+        minNumbers: 1,
+        minSymbols: 1,
+      })
+      .withMessage('Password must be at least 8 characters long and contain at least one uppercase letter, one number, and one symbol'),
     body('role').optional().trim().escape(),
     handleValidationErrors,
   ],
@@ -140,7 +159,7 @@ app.post(
 
       return res.status(201).json({
         success: true,
-        message: 'Registration successful',
+        message: 'User created successfully',
         data: newUser,
       });
     } catch (error) {
@@ -234,6 +253,7 @@ app.post(
         user_id: user.id || user.user_id || user.uuid,
         email: user.email,
         name: user.name,
+        role: user.role,
       };
 
       const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -296,6 +316,92 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
+
+// ===========================
+// LIST USERS (Protected: Admin Only)
+// ===========================
+app.get('/api/users', authenticateToken, authorizeRole(['admin', 'superadmin']), async (req, res) => {
+  try {
+    const query = `SELECT id, name, username, email, role, status, image, created_at FROM "${USERS_TABLE}" ORDER BY created_at DESC`;
+    const result = await pool.query(query);
+
+    return res.json({
+      success: true,
+      data: result.rows,
+    });
+  } catch (error) {
+    console.error('List users error:', error.message);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// ===========================
+// EDIT USER (Protected: Admin Only)
+// ===========================
+app.put(
+  '/api/users/:id',
+  authenticateToken,
+  authorizeRole(['admin', 'superadmin']),
+  [
+    body('name').optional().trim().escape(),
+    body('username').optional().trim().escape(),
+    body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email format'),
+    body('role').optional().trim().escape(),
+    body('status').optional().isBoolean().withMessage('Status must be a boolean'),
+    body('image').optional().trim(),
+    handleValidationErrors,
+  ],
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, username, email, role, status, image } = req.body;
+
+      // Check if user exists
+      const checkUser = await pool.query(`SELECT id FROM "${USERS_TABLE}" WHERE id = $1`, [id]);
+      if (checkUser.rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      // Build update query dynamically
+      const updates = [];
+      const values = [];
+      let paramIdx = 1;
+
+      if (name !== undefined) { updates.push(`name = $${paramIdx++}`); values.push(name); }
+      if (username !== undefined) { updates.push(`username = $${paramIdx++}`); values.push(username); }
+      if (email !== undefined) { updates.push(`email = $${paramIdx++}`); values.push(email); }
+      if (role !== undefined) { updates.push(`role = $${paramIdx++}`); values.push(role); }
+      if (status !== undefined) { updates.push(`status = $${paramIdx++}`); values.push(status); }
+      if (image !== undefined) { updates.push(`image = $${paramIdx++}`); values.push(image); }
+
+      if (updates.length === 0) {
+        return res.status(400).json({ success: false, message: 'No fields to update' });
+      }
+
+      values.push(id);
+      const query = `
+        UPDATE "${USERS_TABLE}" 
+        SET ${updates.join(', ')} 
+        WHERE id = $${paramIdx} 
+        RETURNING id, name, username, email, role, status, image, created_at
+      `;
+
+      const result = await pool.query(query, values);
+
+      return res.json({
+        success: true,
+        message: 'User updated successfully',
+        data: result.rows[0],
+      });
+    } catch (error) {
+      if (error.code === '23505') {
+        return res.status(400).json({ success: false, message: 'Username or email already in use' });
+      }
+      console.error('Edit user error:', error.message);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+);
 
 // ===========================
 // LOGOUT API
@@ -372,6 +478,7 @@ app.post('/api/auth/refresh', async (req, res) => {
         user_id: decoded.user_id,
         email: decoded.email,
         name: decoded.name,
+        role: decoded.role,
       };
 
       const newToken = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -410,11 +517,13 @@ app.get('/', (req, res) => {
     success: true,
     message: 'SSO Login API',
     endpoints: {
-      registrasi: 'POST /api/auth/registrasi (Header: Authorization: Bearer <token>)',
+      user_create: 'POST /api/users (Header: Authorization: Bearer <token>)',
       login: 'POST /api/auth/login',
       refresh: 'POST /api/auth/refresh',
       logout: 'POST /api/auth/logout (Header: Authorization: Bearer <token>)',
       me: 'GET /api/auth/me (Header: Authorization: Bearer <token>)',
+      users_list: 'GET /api/users (Header: Authorization: Bearer <token>)',
+      users_edit: 'PUT /api/users/:id (Header: Authorization: Bearer <token>)',
       verify: 'POST /api/auth/verify',
       health: 'GET /api/health',
     },
@@ -430,11 +539,13 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`API endpoints:`);
-  console.log(`  POST http://localhost:${PORT}/api/auth/registrasi`);
+  console.log(`  POST http://localhost:${PORT}/api/users`);
   console.log(`  POST http://localhost:${PORT}/api/auth/login`);
   console.log(`  POST http://localhost:${PORT}/api/auth/refresh`);
   console.log(`  POST http://localhost:${PORT}/api/auth/logout`);
   console.log(`  GET  http://localhost:${PORT}/api/auth/me`);
+  console.log(`  GET  http://localhost:${PORT}/api/users`);
+  console.log(`  PUT  http://localhost:${PORT}/api/users/:id`);
   console.log(`  POST http://localhost:${PORT}/api/auth/verify`);
   console.log(`  GET  http://localhost:${PORT}/api/health`);
 });
