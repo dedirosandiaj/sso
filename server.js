@@ -119,6 +119,7 @@ app.post(
   [
     body('name').notEmpty().withMessage('Name is required').trim().escape(),
     body('username').notEmpty().withMessage('Username is required').trim().escape(),
+    body('email').notEmpty().withMessage('Email is required').isEmail().withMessage('Invalid email format').normalizeEmail(),
     body('password')
       .isStrongPassword({
         minLength: 8,
@@ -133,8 +134,13 @@ app.post(
   ],
   async (req, res) => {
     try {
-      const { name, username, password, role } = req.body;
+      const { name, username, email, password, role } = req.body;
       const userRole = role || 'user'; // default role
+
+      // Hierarchical Role Check: Only superadmin can create other superadmins
+      if (userRole === 'superadmin' && req.user.role !== 'superadmin') {
+        return res.status(403).json({ success: false, message: 'Only superadmin can create superadmin accounts' });
+      }
 
       // Check if user already exists
       const checkUserQuery = `SELECT id FROM "${USERS_TABLE}" WHERE username = $1 LIMIT 1`;
@@ -150,11 +156,11 @@ app.post(
 
       // Insert new user with default status = false
       const insertQuery = `
-        INSERT INTO "${USERS_TABLE}" (name, username, password, role, status)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, name, username, role, status, created_at
+        INSERT INTO "${USERS_TABLE}" (name, username, email, password, role, status)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, name, username, email, role, status, created_at
       `;
-      const insertResult = await pool.query(insertQuery, [name, username, hashedPassword, userRole, false]);
+      const insertResult = await pool.query(insertQuery, [name, username, email, hashedPassword, userRole, false]);
       const newUser = insertResult.rows[0];
 
       return res.status(201).json({
@@ -357,9 +363,21 @@ app.put(
       const { name, username, email, role, status, image } = req.body;
 
       // Check if user exists
-      const checkUser = await pool.query(`SELECT id FROM "${USERS_TABLE}" WHERE id = $1`, [id]);
+      const checkUser = await pool.query(`SELECT id, role FROM "${USERS_TABLE}" WHERE id = $1`, [id]);
       if (checkUser.rows.length === 0) {
         return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      const targetUser = checkUser.rows[0];
+
+      // Hierarchical Role Check: Non-superadmin cannot edit a superadmin or promote someone to superadmin
+      if (req.user.role !== 'superadmin') {
+        if (targetUser.role === 'superadmin') {
+          return res.status(403).json({ success: false, message: 'Insufficient permissions to edit a superadmin' });
+        }
+        if (role === 'superadmin') {
+          return res.status(403).json({ success: false, message: 'Only superadmin can promote users to superadmin role' });
+        }
       }
 
       // Build update query dynamically
@@ -402,6 +420,49 @@ app.put(
     }
   }
 );
+
+// ===========================
+// DELETE USER (Protected: Admin Only)
+// ===========================
+app.delete('/api/users/:id', authenticateToken, authorizeRole(['admin', 'superadmin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Prevent user from deleting themselves (optional safety check)
+    if (req.user.user_id === id) {
+      return res.status(400).json({ success: false, message: 'You cannot delete your own account' });
+    }
+
+    // Check target user role for hierarchy protection
+    const checkQuery = `SELECT role FROM "${USERS_TABLE}" WHERE id = $1`;
+    const checkRes = await pool.query(checkQuery, [id]);
+    
+    if (checkRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const targetUser = checkRes.rows[0];
+    if (targetUser.role === 'superadmin' && req.user.role !== 'superadmin') {
+      return res.status(403).json({ success: false, message: 'Insufficient permissions to delete a superadmin' });
+    }
+
+    const deleteQuery = `DELETE FROM "${USERS_TABLE}" WHERE id = $1 RETURNING id, username`;
+    const result = await pool.query(deleteQuery, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    return res.json({
+      success: true,
+      message: 'User deleted successfully',
+      data: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Delete user error:', error.message);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
 
 // ===========================
 // LOGOUT API
@@ -524,6 +585,7 @@ app.get('/', (req, res) => {
       me: 'GET /api/auth/me (Header: Authorization: Bearer <token>)',
       users_list: 'GET /api/users (Header: Authorization: Bearer <token>)',
       users_edit: 'PUT /api/users/:id (Header: Authorization: Bearer <token>)',
+      users_delete: 'DELETE /api/users/:id (Header: Authorization: Bearer <token>)',
       verify: 'POST /api/auth/verify',
       health: 'GET /api/health',
     },
@@ -546,6 +608,7 @@ app.listen(PORT, () => {
   console.log(`  GET  http://localhost:${PORT}/api/auth/me`);
   console.log(`  GET  http://localhost:${PORT}/api/users`);
   console.log(`  PUT  http://localhost:${PORT}/api/users/:id`);
+  console.log(`  DELETE http://localhost:${PORT}/api/users/:id`);
   console.log(`  POST http://localhost:${PORT}/api/auth/verify`);
   console.log(`  GET  http://localhost:${PORT}/api/health`);
 });

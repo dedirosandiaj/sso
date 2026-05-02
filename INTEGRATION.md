@@ -10,12 +10,13 @@
    - [1. Create User (Admin Only)](#1-create-user)
    - [2. List User (Admin Only)](#2-list-user)
    - [3. Edit User (Admin Only)](#3-edit-user)
-   - [4. Login](#4-login)
-   - [5. Refresh Token](#5-refresh-token)
-   - [6. Ambil Data Pengguna](#6-ambil-data-pengguna-saat-ini)
-   - [7. Logout (Protected)](#7-logout)
-   - [8. Verifikasi Token](#8-verifikasi-token)
-   - [9. Health Check](#9-health-check)
+   - [4. Delete User (Admin Only)](#4-delete-user)
+   - [5. Login](#5-login)
+   - [6. Refresh Token](#6-refresh-token)
+   - [7. Ambil Data Pengguna](#7-ambil-data-pengguna-saat-ini)
+   - [8. Logout (Protected)](#8-logout)
+   - [9. Verifikasi Token](#9-verifikasi-token)
+   - [10. Health Check](#10-health-check)
 6. [Kode Error](#kode-error)
 7. [Keamanan & Fitur Ekstra](#keamanan--fitur-ekstra)
 8. [Contoh Integrasi](#contoh-integrasi)
@@ -26,13 +27,27 @@
 
 ## Gambaran Umum
 
-API ini menyediakan sistem autentikasi berbasis JWT (JSON Web Token) yang sangat aman. Dilengkapi dengan arsitektur **Access Token + Refresh Token**, sistem **True Logout** (Blacklist), **Account Lockout**, serta **Role-Based Access Control (RBAC)**.
+API ini menyediakan sistem autentikasi berbasis JWT (JSON Web Token) yang sangat aman. Dilengkapi dengan arsitektur **Access Token + Refresh Token**, sistem **True Logout** (Blacklist), **Account Lockout**, serta **Role-Based Access Control (RBAC)** dengan sistem Hirarki Superadmin.
+
+---
+
+## Teknologi
+
+| Teknologi | Fungsi |
+|-----------|--------|
+| Node.js + Express | Backend API |
+| PostgreSQL (pg) | Database |
+| JWT (jsonwebtoken) | Token autentikasi ganda (Access & Refresh) |
+| bcryptjs | Hashing password |
+| Helmet | Security headers |
+| express-rate-limit | Rate limiting & Anti-Brute Force |
+| express-validator | Validasi & Sanitasi input |
 
 ---
 
 ## Konfigurasi Environment
 
-File `.env` yang perlu disiapkan:
+File `.env` yang harus disiapkan:
 
 ```env
 PORT=3000
@@ -41,108 +56,75 @@ PORT=3000
 DB_HOST=103.127.139.112
 DB_PORT=5432
 DB_USER=postgres
-DB_PASSWORD=password_database_anda
+DB_PASSWORD=your_password
 DB_NAME=sso_auth
 
 # JWT (Access Token)
-JWT_SECRET=rahasia_jwt_utama
+JWT_SECRET=rahasia_utama_sangat_panjang
 JWT_EXPIRES_IN=15m
 
 # JWT (Refresh Token)
-JWT_REFRESH_SECRET=rahasia_jwt_refresh_token
+JWT_REFRESH_SECRET=rahasia_refresh_lebih_panjang_lagi
 JWT_REFRESH_EXPIRES_IN=7d
 
-# CORS (kosongkan = allow all)
-CORS_ORIGIN=https://website-anda.com
+# CORS (Pisahkan dengan koma, tanpa slash di akhir)
+CORS_ORIGIN=http://localhost:3000,https://app.ucentric.id
 ```
 
 ---
 
 ## Alur Autentikasi
 
-Sistem ini menggunakan mekanisme token ganda yang modern:
-1. **Login:** User mengirim email/username & password. Server mengembalikan **Access Token (15 menit)** & **Refresh Token (7 hari)**.
-2. **Akses Data:** Client mengirim *Access Token* di *header*.
-3. **RBAC:** API Manajemen User hanya bisa diakses oleh user dengan role `admin` atau `superadmin`.
+1. **Login:** Mengirim kredensial -> Mendapat `token` (akses) & `refreshToken`.
+2. **Authorize:** Masukkan `token` ke Header `Authorization: Bearer <token>`.
+3. **Expired:** Jika mendapat error 403 (expired), gunakan `refreshToken` ke endpoint `/api/auth/refresh`.
+4. **Logout:** Mematikan kedua token (Blacklist & Delete DB).
 
 ---
 
 ## Endpoint API
 
 ### 1. Create User
-
 **POST** `/api/users`
+*Admin Only. Hanya Superadmin yang bisa membuat Superadmin baru.*
 
-Mendaftarkan user baru. Endpoint ini **hanya bisa diakses oleh Admin**.
-
-#### Syarat Password Kuat:
-- Minimal **8 karakter**.
-- Wajib mengandung minimal **1 Huruf Besar**.
-- Wajib mengandung minimal **1 Angka**.
-- Wajib mengandung minimal **1 Simbol/Karakter Spesial**.
-
-#### Header Wajib
+```json
+{
+  "name": "Budi Santoso",
+  "username": "budi.s",
+  "email": "budi@email.com",
+  "password": "StrongPassword123!",
+  "role": "admin"
+}
 ```
-Authorization: Bearer <access_token_admin>
-```
-
----
 
 ### 2. List User
-
 **GET** `/api/users`
-
-Mengambil daftar user. **Hanya bisa diakses oleh Admin**.
-
-#### Header Wajib
-```
-Authorization: Bearer <access_token_admin>
-```
-
----
+*Admin Only. Menampilkan semua user.*
 
 ### 3. Edit User
-
 **PUT** `/api/users/:id`
+*Admin Only. Admin dilarang mengedit Superadmin.*
 
-Memperbarui data user berdasarkan ID. **Hanya bisa diakses oleh Admin**.
+### 4. Delete User
+**DELETE** `/api/users/:id`
+*Admin Only. Admin dilarang menghapus Superadmin.*
 
-#### Header Wajib
-```
-Authorization: Bearer <access_token_admin>
-```
-
----
-
-### 4. Login
-
+### 5. Login
 **POST** `/api/auth/login`
+*Publik. Identifikasi via username atau email.*
 
-Mendapatkan `token` dan `refreshToken`. `token` sekarang berisi informasi `role`.
-
----
-
-### 5. Refresh Token
-
+### 6. Refresh Token
 **POST** `/api/auth/refresh`
+*Publik. Menukar refresh token dengan access token baru.*
 
-Menghasilkan Access Token baru menggunakan Refresh Token yang valid.
-
----
-
-### 6. Ambil Data Pengguna Saat Ini
-
+### 7. Ambil Data Pengguna
 **GET** `/api/auth/me`
+*Protected. Mengambil profil user yang sedang login.*
 
-Mengembalikan data user yang sedang aktif login.
-
----
-
-### 7. Logout
-
+### 8. Logout
 **POST** `/api/auth/logout`
-
-Melakukan "True Logout". Mem-blacklist Access Token dan menghapus Refresh Token.
+*Protected. Memutus sesi secara permanen.*
 
 ---
 
@@ -150,17 +132,52 @@ Melakukan "True Logout". Mem-blacklist Access Token dan menghapus Refresh Token.
 
 | HTTP | Pesan | Penjelasan |
 |------|-------|------------|
-| 400 | Validation error | Format input salah atau field wajib kosong. |
-| 401 | Invalid credentials | Username/Email atau password salah. |
-| 403 | Access denied | User tidak memiliki izin (bukan admin) untuk akses API ini. |
-| 403 | Account is temporarily locked | Akun terkunci akibat salah password 5 kali. |
+| 401 | Invalid credentials | Login gagal (Username/Password salah). |
+| 403 | Access denied | User tidak punya izin (Hirarki RBAC). |
+| 403 | Account locked | Akun terkunci 15 menit (Salah 5x). |
+| 429 | Too many requests | Rate limit terdeteksi. |
 
 ---
 
 ## Keamanan & Fitur Ekstra
 
-1. **Password Policy:** Mewajibkan penggunaan password yang kompleks (Uppercase, Numbers, Symbols) untuk mencegah akun mudah ditebak.
-2. **HTTPS Mandatory:** Seluruh komunikasi token wajib melalui jalur terenkripsi HTTPS. Di level kode, server sudah disiapkan untuk mengenali *Proxy SSL* (`trust proxy`).
-3. **Role-Based Access Control (RBAC):** Proteksi tingkat tinggi untuk endpoint sensitif.
-4. **True Logout (Token Blacklist):** Menghilangkan risiko pencurian token setelah logout.
-5. **Account Lockout:** Menghentikan serangan Brute Force.
+1. **Hierarchy Protection**: Melindungi Superadmin dari perubahan oleh Admin biasa.
+2. **Strong Password**: Wajib Huruf Besar, Angka, Simbol, dan Min 8 Karakter.
+3. **Blacklist Table**: Token yang sudah logout tidak bisa dipakai lagi (True Logout).
+
+---
+
+## Contoh Integrasi (Axios Interceptors)
+
+```javascript
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    if (error.response.status === 403 && !originalRequest._retry) {
+      originalRequest._retry = true;
+      const res = await api.post('/api/auth/refresh', { 
+        refreshToken: localStorage.getItem('refreshToken') 
+      });
+      localStorage.setItem('token', res.data.data.token);
+      return api(originalRequest);
+    }
+    return Promise.reject(error);
+  }
+);
+```
+
+---
+
+## Deploy ke Coolify
+
+1. Pilih **Nixpacks** atau **Dockerfile**.
+2. Masukkan semua variabel dari `.env` ke bagian **Variables**.
+3. Pastikan Port di Coolify sesuai dengan `PORT` di env (3000).
+
+---
+
+## Troubleshooting
+
+1. **CORS Error**: Hapus garis miring `/` di akhir URL `CORS_ORIGIN`.
+2. **DB Connection**: Pastikan IP Server Coolify sudah di-whitelist di firewall Database jika menggunakan DB eksternal.
