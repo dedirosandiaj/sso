@@ -11,8 +11,10 @@ const pool = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
-const USERS_TABLE = process.env.DB_TABLE || 'Users';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '15m';
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+const JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
+const USERS_TABLE = 'users';
 const CORS_ORIGIN = process.env.CORS_ORIGIN;
 
 // Trust proxy (required for rate limiting behind Coolify / reverse proxy)
@@ -53,7 +55,7 @@ const loginLimiter = rateLimit({
 });
 
 // Middleware to verify JWT token
-const authenticateToken = (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
@@ -61,13 +63,27 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Access token is required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ success: false, message: 'Invalid or expired token' });
+  try {
+    // Check if token is blacklisted
+    const blacklistQuery = `SELECT id FROM token_blacklist WHERE token = $1 LIMIT 1`;
+    const blacklistResult = await pool.query(blacklistQuery, [token]);
+
+    if (blacklistResult.rows.length > 0) {
+      return res.status(401).json({ success: false, message: 'Token has been revoked (logged out)' });
     }
-    req.user = user;
-    next();
-  });
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+      if (err) {
+        return res.status(403).json({ success: false, message: 'Invalid or expired token' });
+      }
+      req.user = user;
+      req.token = token; // Save token for logout route
+      next();
+    });
+  } catch (error) {
+    console.error('Auth middleware error:', error.message);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
 };
 
 // Helper to handle validation errors
@@ -82,6 +98,57 @@ const handleValidationErrors = (req, res, next) => {
   }
   next();
 };
+
+// ===========================
+// REGISTRASI API
+// ===========================
+app.post(
+  '/api/auth/registrasi',
+  authenticateToken,
+  [
+    body('name').notEmpty().withMessage('Name is required').trim().escape(),
+    body('username').notEmpty().withMessage('Username is required').trim().escape(),
+    body('password').notEmpty().withMessage('Password is required').isLength({ min: 6, max: 128 }).withMessage('Password must be between 6 and 128 characters'),
+    body('role').optional().trim().escape(),
+    handleValidationErrors,
+  ],
+  async (req, res) => {
+    try {
+      const { name, username, password, role } = req.body;
+      const userRole = role || 'user'; // default role
+
+      // Check if user already exists
+      const checkUserQuery = `SELECT id FROM "${USERS_TABLE}" WHERE username = $1 LIMIT 1`;
+      const checkResult = await pool.query(checkUserQuery, [username]);
+
+      if (checkResult.rows.length > 0) {
+        return res.status(400).json({ success: false, message: 'Username already in use' });
+      }
+
+      // Hash password
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(password, salt);
+
+      // Insert new user with default status = false
+      const insertQuery = `
+        INSERT INTO "${USERS_TABLE}" (name, username, password, role, status)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, name, username, role, status, created_at
+      `;
+      const insertResult = await pool.query(insertQuery, [name, username, hashedPassword, userRole, false]);
+      const newUser = insertResult.rows[0];
+
+      return res.status(201).json({
+        success: true,
+        message: 'Registration successful',
+        data: newUser,
+      });
+    } catch (error) {
+      console.error('Registration error:', error.message);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+);
 
 // ===========================
 // LOGIN API
@@ -111,7 +178,7 @@ app.post(
         query = `SELECT * FROM "${USERS_TABLE}" WHERE email = $1 LIMIT 1`;
         queryParams = [email];
       } else {
-        query = `SELECT * FROM "${USERS_TABLE}" WHERE name = $1 LIMIT 1`;
+        query = `SELECT * FROM "${USERS_TABLE}" WHERE username = $1 LIMIT 1`;
         queryParams = [username];
       }
 
@@ -122,6 +189,12 @@ app.post(
       }
 
       const user = result.rows[0];
+
+      // --- Account Lockout Check ---
+      if (user.locked_until && new Date(user.locked_until) > new Date()) {
+        return res.status(403).json({ success: false, message: 'Account is temporarily locked. Try again later.' });
+      }
+
       const storedPassword = user.password;
 
       if (!storedPassword) {
@@ -137,10 +210,26 @@ app.post(
       const isMatch = await bcrypt.compare(password, storedPassword);
 
       if (!isMatch) {
+        // --- Handle Failed Attempt ---
+        let failedAttempts = (user.failed_login_attempts || 0) + 1;
+        let lockedUntilQuery = '';
+        let queryParams = [failedAttempts, user.id];
+        
+        if (failedAttempts >= 5) {
+          lockedUntilQuery = `, locked_until = NOW() + INTERVAL '15 minutes'`;
+        }
+
+        await pool.query(`UPDATE "${USERS_TABLE}" SET failed_login_attempts = $1 ${lockedUntilQuery} WHERE id = $2`, queryParams);
+
         return res.status(401).json({ success: false, message: 'Invalid credentials' });
       }
 
-      // Generate JWT token
+      // --- Reset Failed Attempts ---
+      if (user.failed_login_attempts > 0 || user.locked_until) {
+        await pool.query(`UPDATE "${USERS_TABLE}" SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`, [user.id]);
+      }
+
+      // Generate JWT Access token
       const tokenPayload = {
         user_id: user.id || user.user_id || user.uuid,
         email: user.email,
@@ -148,15 +237,27 @@ app.post(
       };
 
       const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+      
+      // Generate Refresh Token
+      const refreshToken = jwt.sign(tokenPayload, JWT_REFRESH_SECRET, { expiresIn: JWT_REFRESH_EXPIRES_IN });
+      
+      // Save refresh token to DB
+      const decodedRefresh = jwt.decode(refreshToken);
+      const refreshExpiresAt = new Date(decodedRefresh.exp * 1000);
+      await pool.query(
+        `INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`,
+        [user.id, refreshToken, refreshExpiresAt]
+      );
 
       // Remove sensitive data before returning
-      const { password: _, ...userWithoutPassword } = user;
+      const { password: _, failed_login_attempts, locked_until, ...userWithoutPassword } = user;
 
       return res.json({
         success: true,
         message: 'Login successful',
         data: {
           token,
+          refreshToken,
           token_type: 'Bearer',
           expires_in: JWT_EXPIRES_IN,
           user: userWithoutPassword,
@@ -197,6 +298,36 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 });
 
 // ===========================
+// LOGOUT API
+// ===========================
+app.post('/api/auth/logout', authenticateToken, async (req, res) => {
+  try {
+    const token = req.token;
+    const { refreshToken } = req.body;
+    
+    // We can extract expiration from the token to know when it can be safely deleted from DB
+    const decoded = jwt.decode(token);
+    const expiresAt = new Date(decoded.exp * 1000);
+
+    const insertQuery = `INSERT INTO token_blacklist (token, expires_at) VALUES ($1, $2)`;
+    await pool.query(insertQuery, [token, expiresAt]);
+
+    if (refreshToken) {
+      await pool.query(`DELETE FROM refresh_tokens WHERE token = $1`, [refreshToken]);
+    }
+
+    return res.json({ success: true, message: 'Logged out successfully' });
+  } catch (error) {
+    // If token is already blacklisted (unique constraint), it's fine
+    if (error.code === '23505') {
+       return res.json({ success: true, message: 'Already logged out' });
+    }
+    console.error('Logout error:', error.message);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// ===========================
 // VERIFY TOKEN
 // ===========================
 app.post('/api/auth/verify', async (req, res) => {
@@ -211,6 +342,53 @@ app.post('/api/auth/verify', async (req, res) => {
     return res.json({ success: true, data: decoded });
   } catch (error) {
     return res.status(403).json({ success: false, message: 'Invalid or expired token' });
+  }
+});
+
+// ===========================
+// REFRESH TOKEN API
+// ===========================
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(400).json({ success: false, message: 'Refresh token is required' });
+    }
+
+    // Verify token
+    jwt.verify(refreshToken, JWT_REFRESH_SECRET, async (err, decoded) => {
+      if (err) {
+        return res.status(403).json({ success: false, message: 'Invalid or expired refresh token' });
+      }
+
+      // Check if it exists in DB
+      const result = await pool.query('SELECT * FROM refresh_tokens WHERE token = $1 LIMIT 1', [refreshToken]);
+      if (result.rows.length === 0) {
+        return res.status(403).json({ success: false, message: 'Refresh token not found or revoked' });
+      }
+
+      // Generate new access token
+      const tokenPayload = {
+        user_id: decoded.user_id,
+        email: decoded.email,
+        name: decoded.name,
+      };
+
+      const newToken = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+
+      return res.json({
+        success: true,
+        message: 'Token refreshed successfully',
+        data: {
+          token: newToken,
+          token_type: 'Bearer',
+          expires_in: JWT_EXPIRES_IN
+        }
+      });
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error.message);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
@@ -232,7 +410,10 @@ app.get('/', (req, res) => {
     success: true,
     message: 'SSO Login API',
     endpoints: {
+      registrasi: 'POST /api/auth/registrasi (Header: Authorization: Bearer <token>)',
       login: 'POST /api/auth/login',
+      refresh: 'POST /api/auth/refresh',
+      logout: 'POST /api/auth/logout (Header: Authorization: Bearer <token>)',
       me: 'GET /api/auth/me (Header: Authorization: Bearer <token>)',
       verify: 'POST /api/auth/verify',
       health: 'GET /api/health',
@@ -249,7 +430,10 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`API endpoints:`);
+  console.log(`  POST http://localhost:${PORT}/api/auth/registrasi`);
   console.log(`  POST http://localhost:${PORT}/api/auth/login`);
+  console.log(`  POST http://localhost:${PORT}/api/auth/refresh`);
+  console.log(`  POST http://localhost:${PORT}/api/auth/logout`);
   console.log(`  GET  http://localhost:${PORT}/api/auth/me`);
   console.log(`  POST http://localhost:${PORT}/api/auth/verify`);
   console.log(`  GET  http://localhost:${PORT}/api/health`);

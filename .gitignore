@@ -52,3 +52,6 @@ Thumbs.db
 *.tmp
 *.temp
 .cache
+
+# Temporary setup & migration scripts
+migrate_*.js
