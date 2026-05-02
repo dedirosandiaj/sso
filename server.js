@@ -48,10 +48,20 @@ app.use(generalLimiter);
 // Strict rate limiter for login attempts
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // limit each IP to 10 login attempts per windowMs
+  max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, message: 'Too many login attempts, please try again after 15 minutes.' },
+  handler: (req, res) => {
+    const resetTime = req.rateLimit.resetTime;
+    const remainingMs = resetTime - Date.now();
+    const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+    
+    res.status(429).json({
+      success: false,
+      message: `Too many login attempts. Please try again in ${remainingMinutes} minutes.`,
+      retry_after: remainingMinutes
+    });
+  }
 });
 
 // Middleware to verify JWT token
@@ -222,7 +232,12 @@ app.post(
 
       // --- Account Lockout Check ---
       if (user.locked_until && new Date(user.locked_until) > new Date()) {
-        return res.status(403).json({ success: false, message: 'Account is temporarily locked. Try again later.' });
+        const remainingMs = new Date(user.locked_until) - new Date();
+        const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
+        return res.status(403).json({ 
+          success: false, 
+          message: `Account is temporarily locked. Try again in ${remainingMinutes} minutes.` 
+        });
       }
 
       const storedPassword = user.password;
