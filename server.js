@@ -361,6 +361,7 @@ app.get('/api/users', authenticateToken, authorizeRole(['admin', 'superadmin']),
   }
 });
 
+
 // ===========================
 // EDIT USER (Protected: Admin Only)
 // ===========================
@@ -397,6 +398,13 @@ app.put(
         }
         if (role === 'superadmin') {
           return res.status(403).json({ success: false, message: 'Only superadmin can promote users to superadmin role' });
+        }
+      }
+
+      // Self-deactivation protection: Admin/Superadmin cannot deactivate themselves
+      if (req.user.user_id === id && status === false) {
+        if (req.user.role === 'admin' || req.user.role === 'superadmin') {
+          return res.status(400).json({ success: false, message: 'Administrators cannot deactivate their own accounts' });
         }
       }
 
