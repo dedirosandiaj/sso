@@ -612,49 +612,61 @@ app.post(
       if (userResult.rows.length === 0) {
         return res.json({
           success: true,
-          message: 'If the email exists, a password reset link has been sent',
+          message: 'If the email exists, a new password has been sent to your email',
         });
       }
 
       const user = userResult.rows[0];
 
-      // Generate reset token
-      const resetToken = crypto.randomBytes(32).toString('hex');
-      const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+      // Generate random password
+      const randomPassword = crypto.randomBytes(6).toString('base64').slice(0, 12);
+      const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+      const numbers = '0123456789';
+      const symbols = '!@#$%^&*';
+      
+      // Ensure password meets requirements
+      const finalPassword = 
+        randomPassword[0].toUpperCase() + 
+        randomPassword.slice(1) + 
+        numbers[Math.floor(Math.random() * numbers.length)] + 
+        symbols[Math.floor(Math.random() * symbols.length)];
 
-      // Save token to database
+      // Hash new password
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(finalPassword, salt);
+
+      // Update password in database
       await pool.query(
-        `INSERT INTO password_resets (user_id, token, expires_at) VALUES ($1, $2, $3)`,
-        [user.id, resetToken, resetTokenExpiry]
+        `UPDATE "${USERS_TABLE}" SET password = $1 WHERE id = $2`,
+        [hashedPassword, user.id]
       );
 
-      // Create reset link
-      const resetLink = `${process.env.FRONTEND_URL || 'https://auth.ucentric.id'}/reset-password?token=${resetToken}`;
-
-      // Send email
+      // Send email with new password
       const mailOptions = {
         from: process.env.SMTP_FROM || 'alert@ucentric.id',
         to: user.email,
-        subject: 'Reset Password - Ucentric SSO',
+        subject: 'Password Reset - Ucentric SSO',
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #333;">Reset Password</h2>
+            <h2 style="color: #333;">Password Reset</h2>
             <p>Halo ${user.name},</p>
             <p>Anda meminta untuk mereset password akun SSO Anda.</p>
             <p style="margin: 30px 0;">
-              <a href="${resetLink}" 
-                 style="background-color: #007bff; color: white; padding: 12px 30px; 
-                        text-decoration: none; border-radius: 5px; display: inline-block;">
-                Reset Password
-              </a>
+              Password baru Anda:
             </p>
-            <p>Atau copy link ini ke browser Anda:</p>
-            <p style="background: #f4f4f4; padding: 10px; word-break: break-all;">${resetLink}</p>
+            <div style="background: #f4f4f4; padding: 20px; border-radius: 5px; text-align: center;">
+              <code style="font-size: 24px; font-weight: bold; color: #007bff; letter-spacing: 2px;">
+                ${finalPassword}
+              </code>
+            </div>
+            <p style="margin-top: 30px;">
+              Silakan login dengan password baru di atas.
+            </p>
             <p style="color: #666; margin-top: 30px;">
-              Link ini akan expired dalam <strong>1 jam</strong>.
+              <strong>Penting:</strong> Segera ganti password ini setelah login untuk keamanan.
             </p>
             <p style="color: #666;">
-              Jika Anda tidak meminta reset password, abaikan email ini.
+              Jika Anda tidak meminta reset password, segera hubungi administrator.
             </p>
             <hr style="margin-top: 40px; border: none; border-top: 1px solid #ddd;" />
             <p style="color: #999; font-size: 12px;">
@@ -670,80 +682,10 @@ app.post(
 
       return res.json({
         success: true,
-        message: 'If the email exists, a password reset link has been sent',
+        message: 'If the email exists, a new password has been sent to your email',
       });
     } catch (error) {
       console.error('Forgot password error:', error.message);
-      return res.status(500).json({ success: false, message: 'Internal server error' });
-    }
-  }
-);
-
-// ===========================
-// RESET PASSWORD
-// ===========================
-app.post(
-  '/api/auth/reset-password',
-  [
-    body('token').notEmpty().withMessage('Token is required'),
-    body('password')
-      .isStrongPassword({
-        minLength: 8,
-        minLowercase: 1,
-        minUppercase: 1,
-        minNumbers: 1,
-        minSymbols: 1,
-      })
-      .withMessage('Password must be at least 8 characters long and contain at least one uppercase letter, one number, and one symbol'),
-    handleValidationErrors,
-  ],
-  async (req, res) => {
-    try {
-      const { token, password } = req.body;
-
-      // Find reset token
-      const tokenQuery = `
-        SELECT pr.user_id, pr.expires_at, u.email 
-        FROM password_resets pr
-        JOIN "${USERS_TABLE}" u ON pr.user_id = u.id
-        WHERE pr.token = $1
-      `;
-      const tokenResult = await pool.query(tokenQuery, [token]);
-
-      if (tokenResult.rows.length === 0) {
-        return res.status(400).json({ success: false, message: 'Invalid or expired reset token' });
-      }
-
-      const { user_id, expires_at } = tokenResult.rows[0];
-
-      // Check if token expired
-      if (new Date(expires_at) < new Date()) {
-        // Delete expired token
-        await pool.query(`DELETE FROM password_resets WHERE token = $1`, [token]);
-        return res.status(400).json({ success: false, message: 'Reset token has expired' });
-      }
-
-      // Hash new password
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(password, salt);
-
-      // Update password
-      await pool.query(
-        `UPDATE "${USERS_TABLE}" SET password = $1 WHERE id = $2`,
-        [hashedPassword, user_id]
-      );
-
-      // Delete used token
-      await pool.query(`DELETE FROM password_resets WHERE token = $1`, [token]);
-
-      console.log(`✅ Password reset successful for user ${user_id}`);
-
-      return res.json({
-        success: true,
-        message: 'Password has been reset successfully. You can now login with your new password.',
-      });
-    } catch (error) {
-      console.error('Reset password error:', error.message);
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }
@@ -773,7 +715,6 @@ app.get('/', (req, res) => {
       logout: 'POST /api/auth/logout (Header: Authorization: Bearer <token>)',
       me: 'GET /api/auth/me (Header: Authorization: Bearer <token>)',
       forgot_password: 'POST /api/auth/forgot-password',
-      reset_password: 'POST /api/auth/reset-password',
       users_list: 'GET /api/users (Header: Authorization: Bearer <token>)',
       users_edit: 'PUT /api/users/:id (Header: Authorization: Bearer <token>)',
       users_delete: 'DELETE /api/users/:id (Header: Authorization: Bearer <token>)',
