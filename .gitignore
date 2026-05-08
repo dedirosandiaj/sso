@@ -56,3 +56,5 @@ Thumbs.db
 # Temporary setup & migration scripts
 migrate_*.js
 create_user.js
+setup_db.js
+migrate.js

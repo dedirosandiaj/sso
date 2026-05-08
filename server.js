@@ -331,7 +331,7 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
     }
 
     const user = result.rows[0];
-    const { password: _, ...userWithoutPassword } = user;
+    const { password: _, failed_login_attempts, locked_until, ...userWithoutPassword } = user;
 
     return res.json({
       success: true,
