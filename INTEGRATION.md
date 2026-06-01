@@ -232,7 +232,77 @@ Dapatkan access token baru menggunakan refresh token (tanpa login ulang).
 
 ---
 
-#### 3. Logout
+#### 3. Forgot Password (Reset Password via Email)
+
+**POST** `/api/auth/forgot-password`
+
+Minta reset password. Sistem akan meng-generate password baru secara otomatis dan mengirimkannya via email.
+
+**Alur:**
+1. User input email di form "Lupa Password"
+2. Sistem generate password random yang aman
+3. Password langsung di-update di database
+4. Email dikirim ke user berisi password baru
+5. User bisa langsung login dengan password baru
+
+**Rate Limit:** Max 5 request per jam (mencegah spam)
+
+**Request:**
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+**Response Sukses (200):**
+
+```json
+{
+  "success": true,
+  "message": "If the email exists, a new password has been sent to your email"
+}
+```
+
+**Response Error:**
+
+| Status | Message | Penjelasan |
+|--------|---------|------------|
+| 400 | Valid email is required | Format email salah |
+| 429 | Too many requests | Rate limit terpicu (max 5x per jam) |
+| 500 | Internal server error | Error di server |
+
+**Keamanan:**
+- Selalu return success meskipun email tidak ditemukan (mencegah email enumeration)
+- Password yang di-generate memenuhi kriteria: huruf besar, huruf kecil, angka, dan simbol
+- Email berisi warning untuk segera mengganti password setelah login
+
+**Contoh Email yang Dikirim:**
+
+```
+Password Reset
+
+Halo John Doe,
+
+Anda meminta untuk mereset password akun SSO Anda.
+
+Password baru Anda:
+┌─────────────────────┐
+│  aBcDeFgHiJkL3@     │
+└─────────────────────┘
+
+Silakan login dengan password baru di atas.
+
+Penting: Segera ganti password ini setelah login untuk keamanan.
+
+Jika Anda tidak meminta reset password, segera hubungi administrator.
+```
+
+**Catatan:** Endpoint `/api/auth/reset-password` sudah dihapus. Flow reset password sekarang sepenuhnya otomatis via email.
+
+---
+
+#### 4. Logout
 
 **POST** `/api/auth/logout`
 
@@ -259,7 +329,7 @@ Logout pengguna dan blacklist access token.
 
 ---
 
-#### 4. Get Current User
+#### 5. Get Current User
 
 **GET** `/api/auth/me`
 
@@ -289,7 +359,7 @@ Ambil data pengguna yang sedang login.
 
 ---
 
-#### 5. Health Check
+#### 6. Health Check
 
 **GET** `/api/health`
 
@@ -373,6 +443,7 @@ Mendapatkan daftar semua endpoint API yang tersedia. Berguna untuk dokumentasi c
     "refresh": "POST /api/auth/refresh",
     "logout": "POST /api/auth/logout (Header: Authorization: Bearer <token>)",
     "me": "GET /api/auth/me (Header: Authorization: Bearer <token>)",
+    "forgot_password": "POST /api/auth/forgot-password",
     "users_list": "GET /api/users (Header: Authorization: Bearer <token>)",
     "users_edit": "PUT /api/users/:id (Header: Authorization: Bearer <token>)",
     "users_delete": "DELETE /api/users/:id (Header: Authorization: Bearer <token>)",
@@ -586,6 +657,15 @@ class AuthService {
     localStorage.removeItem('user');
   }
 
+  static async forgotPassword(email) {
+    const res = await fetch(`${API_URL}/api/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    return res.json();
+  }
+
   static async refreshTokenIfNeeded() {
     const refreshToken = localStorage.getItem('refreshToken');
     if (!refreshToken) return false;
@@ -612,6 +692,7 @@ class AuthService {
 // Cara pakai:
 // AuthService.login('user@example.com', 'password').then(console.log);
 // AuthService.getProfile().then(console.log);
+// AuthService.forgotPassword('user@example.com').then(console.log);
 // AuthService.logout();
 ```
 
@@ -703,8 +784,17 @@ export function AuthProvider({ children }) {
     return false;
   };
 
+  const forgotPassword = async (email) => {
+    const res = await fetch(`${API_URL}/api/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    return res.json();
+  };
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, refreshSession, loading }}>
+    <AuthContext.Provider value={{ user, login, logout, refreshSession, forgotPassword, loading }}>
       {children}
     </AuthContext.Provider>
   );
@@ -713,7 +803,7 @@ export function AuthProvider({ children }) {
 export const useAuth = () => useContext(AuthContext);
 
 // Cara pakai di komponen:
-// const { user, login, logout } = useAuth();
+// const { user, login, logout, forgotPassword } = useAuth();
 ```
 
 ### React Native (Mobile)
