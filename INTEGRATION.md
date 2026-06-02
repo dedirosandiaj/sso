@@ -496,7 +496,8 @@ Buat pengguna baru (dengan password).
     "username": "jane_smith",
     "email": "jane@example.com",
     "role": "user",
-    "status": false
+    "status": false,
+    "referral_code": "20260602JFLLKJSFIEH"
   }
 }
 ```

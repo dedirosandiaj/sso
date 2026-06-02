@@ -121,6 +121,17 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
+// Helper to generate a random uppercase string using crypto
+const generateRandomCode = (length = 11) => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const bytes = crypto.randomBytes(length);
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars[bytes[i] % chars.length];
+  }
+  return result;
+};
+
 // ===========================
 // CREATE USER (Protected: Admin Only)
 // ===========================
@@ -166,13 +177,36 @@ app.post(
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(password, salt);
 
+      // Generate referral code if role is neither admin nor superadmin
+      let referralCode = null;
+      if (userRole !== 'admin' && userRole !== 'superadmin') {
+        let isUnique = false;
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+        const datePrefix = `${yyyy}${mm}${dd}`;
+
+        while (!isUnique) {
+          const randomPart = generateRandomCode(11);
+          referralCode = `${datePrefix}${randomPart}`;
+
+          // Check if referral_code already exists
+          const checkCodeQuery = `SELECT id FROM "${USERS_TABLE}" WHERE referral_code = $1 LIMIT 1`;
+          const codeResult = await pool.query(checkCodeQuery, [referralCode]);
+          if (codeResult.rows.length === 0) {
+            isUnique = true;
+          }
+        }
+      }
+
       // Insert new user with default status = false
       const insertQuery = `
-        INSERT INTO "${USERS_TABLE}" (name, username, email, password, role, status)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id, name, username, email, role, status, created_at
+        INSERT INTO "${USERS_TABLE}" (name, username, email, password, role, status, referral_code)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id, name, username, email, role, status, referral_code, created_at
       `;
-      const insertResult = await pool.query(insertQuery, [name, username, email, hashedPassword, userRole, false]);
+      const insertResult = await pool.query(insertQuery, [name, username, email, hashedPassword, userRole, false, referralCode]);
       const newUser = insertResult.rows[0];
 
       return res.status(201).json({
@@ -350,7 +384,7 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 // ===========================
 app.get('/api/users', authenticateToken, authorizeRole(['admin', 'superadmin']), async (req, res) => {
   try {
-    const query = `SELECT id, name, username, email, role, status, image, created_at FROM "${USERS_TABLE}" ORDER BY created_at DESC`;
+    const query = `SELECT id, name, username, email, role, status, image, referral_code, created_at FROM "${USERS_TABLE}" ORDER BY created_at DESC`;
     const result = await pool.query(query);
 
     return res.json({
@@ -431,7 +465,7 @@ app.put(
         UPDATE "${USERS_TABLE}" 
         SET ${updates.join(', ')} 
         WHERE id = $${paramIdx} 
-        RETURNING id, name, username, email, role, status, image, created_at
+        RETURNING id, name, username, email, role, status, image, referral_code, created_at
       `;
 
       const result = await pool.query(query, values);
