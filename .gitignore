@@ -58,3 +58,6 @@ migrate_*.js
 create_user.js
 setup_db.js
 migrate.js
+
+# Local API Documentation (Excluded for security)
+local-docs/

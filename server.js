@@ -22,6 +22,14 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN;
 // Trust proxy (required for rate limiting behind Coolify / reverse proxy)
 app.set('trust proxy', 1);
 
+// Optional local API documentation (ignored in git)
+const fs = require('fs');
+const path = require('path');
+const docsPath = path.join(__dirname, 'local-docs');
+if (fs.existsSync(docsPath)) {
+  app.use('/api-docs', express.static(docsPath));
+}
+
 // Security headers
 app.use(helmet());
 
@@ -57,7 +65,7 @@ const loginLimiter = rateLimit({
     const resetTime = req.rateLimit.resetTime;
     const remainingMs = resetTime - Date.now();
     const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
-    
+
     res.status(429).json({
       success: false,
       message: `Too many login attempts. Please try again in ${remainingMinutes} minutes.`,
@@ -270,9 +278,9 @@ app.post(
       if (user.locked_until && new Date(user.locked_until) > new Date()) {
         const remainingMs = new Date(user.locked_until) - new Date();
         const remainingMinutes = Math.ceil(remainingMs / (60 * 1000));
-        return res.status(403).json({ 
-          success: false, 
-          message: `Account is temporarily locked. Try again in ${remainingMinutes} minutes.` 
+        return res.status(403).json({
+          success: false,
+          message: `Account is temporarily locked. Try again in ${remainingMinutes} minutes.`
         });
       }
 
@@ -295,7 +303,7 @@ app.post(
         let failedAttempts = (user.failed_login_attempts || 0) + 1;
         let lockedUntilQuery = '';
         let queryParams = [failedAttempts, user.id];
-        
+
         if (failedAttempts >= 5) {
           lockedUntilQuery = `, locked_until = NOW() + INTERVAL '15 minutes'`;
         }
@@ -319,10 +327,10 @@ app.post(
       };
 
       const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-      
+
       // Generate Refresh Token
       const refreshToken = jwt.sign(tokenPayload, JWT_REFRESH_SECRET, { expiresIn: JWT_REFRESH_EXPIRES_IN });
-      
+
       // Save refresh token to DB
       const decodedRefresh = jwt.decode(refreshToken);
       const refreshExpiresAt = new Date(decodedRefresh.exp * 1000);
@@ -500,7 +508,7 @@ app.delete('/api/users/:id', authenticateToken, authorizeRole(['admin', 'superad
     // Check target user role for hierarchy protection
     const checkQuery = `SELECT role FROM "${USERS_TABLE}" WHERE id = $1`;
     const checkRes = await pool.query(checkQuery, [id]);
-    
+
     if (checkRes.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -535,7 +543,7 @@ app.post('/api/auth/logout', authenticateToken, async (req, res) => {
   try {
     const token = req.token;
     const { refreshToken } = req.body;
-    
+
     // We can extract expiration from the token to know when it can be safely deleted from DB
     const decoded = jwt.decode(token);
     const expiresAt = new Date(decoded.exp * 1000);
@@ -551,7 +559,7 @@ app.post('/api/auth/logout', authenticateToken, async (req, res) => {
   } catch (error) {
     // If token is already blacklisted (unique constraint), it's fine
     if (error.code === '23505') {
-       return res.json({ success: true, message: 'Already logged out' });
+      return res.json({ success: true, message: 'Already logged out' });
     }
     console.error('Logout error:', error.message);
     return res.status(500).json({ success: false, message: 'Internal server error' });
@@ -657,12 +665,12 @@ app.post(
       const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
       const numbers = '0123456789';
       const symbols = '!@#$%^&*';
-      
+
       // Ensure password meets requirements
-      const finalPassword = 
-        randomPassword[0].toUpperCase() + 
-        randomPassword.slice(1) + 
-        numbers[Math.floor(Math.random() * numbers.length)] + 
+      const finalPassword =
+        randomPassword[0].toUpperCase() +
+        randomPassword.slice(1) +
+        numbers[Math.floor(Math.random() * numbers.length)] +
         symbols[Math.floor(Math.random() * symbols.length)];
 
       // Hash new password
@@ -679,12 +687,12 @@ app.post(
       const mailOptions = {
         from: process.env.SMTP_FROM || 'alert@ucentric.id',
         to: user.email,
-        subject: 'Password Reset - Ucentric SSO',
+        subject: 'Password Baru Anda',
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #333;">Password Reset</h2>
             <p>Halo ${user.name},</p>
-            <p>Anda meminta untuk mereset password akun SSO Anda.</p>
+            <p>Anda meminta untuk mereset password akun Anda.</p>
             <p style="margin: 30px 0;">
               Password baru Anda:
             </p>
@@ -697,14 +705,14 @@ app.post(
               Silakan login dengan password baru di atas.
             </p>
             <p style="color: #666; margin-top: 30px;">
-              <strong>Penting:</strong> Segera ganti password ini setelah login untuk keamanan.
+              <strong>Penting:</strong> Jangan beritahu orang lain, password ini hanya anda yang tau.
             </p>
             <p style="color: #666;">
               Jika Anda tidak meminta reset password, segera hubungi administrator.
             </p>
             <hr style="margin-top: 40px; border: none; border-top: 1px solid #ddd;" />
             <p style="color: #999; font-size: 12px;">
-              Ucentric SSO System<br />
+              Login System<br />
               Jangan balas email ini, ini adalah email otomatis.
             </p>
           </div>
@@ -733,7 +741,7 @@ app.get('/api/health', async (req, res) => {
     await pool.query('SELECT NOW()');
     return res.json({ success: true, message: 'API is running', database: 'connected', timestamp: new Date().toISOString() });
   } catch (error) {
-    return res.status(500).json({ success: false, message: 'Database connection failed', error: error.message });
+    return res.status(500).json({ success: false, message: 'Database connection failed' });
   }
 });
 
@@ -741,20 +749,7 @@ app.get('/api/health', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: 'SSO Login API',
-    endpoints: {
-      user_create: 'POST /api/users (Header: Authorization: Bearer <token>)',
-      login: 'POST /api/auth/login',
-      refresh: 'POST /api/auth/refresh',
-      logout: 'POST /api/auth/logout (Header: Authorization: Bearer <token>)',
-      me: 'GET /api/auth/me (Header: Authorization: Bearer <token>)',
-      forgot_password: 'POST /api/auth/forgot-password',
-      users_list: 'GET /api/users (Header: Authorization: Bearer <token>)',
-      users_edit: 'PUT /api/users/:id (Header: Authorization: Bearer <token>)',
-      users_delete: 'DELETE /api/users/:id (Header: Authorization: Bearer <token>)',
-      verify: 'POST /api/auth/verify',
-      health: 'GET /api/health',
-    },
+    message: 'SSO Login API Service is running'
   });
 });
 
