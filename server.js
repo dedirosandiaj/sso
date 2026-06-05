@@ -685,7 +685,7 @@ app.post(
 
       // Send email with new password
       const mailOptions = {
-        from: process.env.SMTP_FROM || 'alert@ucentric.id',
+        from: process.env.SMTP_FROM || 'info@ucentric.id',
         to: user.email,
         subject: 'Password Baru Anda',
         html: `
