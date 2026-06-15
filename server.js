@@ -741,7 +741,8 @@ app.get('/api/health', async (req, res) => {
     await pool.query('SELECT NOW()');
     return res.json({ success: true, message: 'API is running', database: 'connected', timestamp: new Date().toISOString() });
   } catch (error) {
-    return res.status(500).json({ success: false, message: 'Database connection failed' });
+    console.error('Health check database query failed:', error);
+    return res.status(500).json({ success: false, message: 'Database connection failed', error: error.message });
   }
 });
 
