@@ -7,6 +7,7 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
+  connectionTimeoutMillis: 2000, // Timeout connection attempt after 2 seconds
 });
 
 pool.on('connect', () => {
